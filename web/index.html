@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Monitor Dashboard</title>
+<style>
+  body {
+    font-family: sans-serif;
+    margin: 24px;
+    background: #f7f7f7;
+    color: #222;
+  }
+  h1 { margin-bottom: 8px; }
+  p { color: #555; }
+  #updated-at, #connection-state {
+    margin: 8px 0;
+    font-size: 13px;
+    color: #555;
+  }
+  .table-wrap {
+    overflow-x: auto;
+    margin-top: 18px;
+  }
+  table {
+    width: 100%;
+    min-width: 1000px;
+    border-collapse: collapse;
+    background: white;
+  }
+  th, td {
+    border: 1px solid #ddd;
+    padding: 12px;
+    text-align: left;
+    font-size: 14px;
+  }
+  th { background: #eaeaea; }
+  tr.health-warning { background: #fff5d9; }
+  tr.health-alert { background: #ffe5e5; }
+  tr.health-unknown { background: #f0edf7; }
+  tr.health-stale { background: #eeeeee; color: #666; }
+  .status-text { font-weight: bold; }
+  td.health-ok { color: #16712d; font-weight: bold; }
+  td.health-warning { color: #916300; font-weight: bold; }
+  td.health-alert { color: #ad2020; font-weight: bold; }
+  td.health-unknown { color: #684399; font-weight: bold; }
+  td.health-observe { color: #42627b; font-weight: bold; }
+  td.health-stale { color: #666; font-weight: bold; }
+  .note {
+    margin-top: 12px;
+    font-size: 12px;
+    color: #666;
+  }
+</style>
+</head>
+<body>
+<h1>Network Monitor Dashboard</h1>
+<p>TCP接続状態と監視条件に対するヘルスステータス</p>
+
+<div id="updated-at">取得待機中...</div>
+<div id="connection-state">監視データを確認しています...</div>
+
+<section id="auth-section" aria-live="polite" style="margin:20px 0; padding:14px; border:1px solid #ccc; background:#fff">
+  <h2 style="font-size:18px;margin:0 0 8px">認証セキュリティアラート</h2>
+  <div id="auth-state">認証監視データを確認しています...</div>
+  <div id="auth-detail" class="note"></div>
+  <p class="note">個別のログイン成功・失敗やユーザー名は表示しません。本人の入力ミスと第三者の試行は、この情報だけでは区別できません。</p>
+</section>
+
+<div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th>Time（接続試行時刻）</th>
+        <th>IP</th>
+        <th>Port</th>
+        <th>Status（観測）</th>
+        <th>Expected（期待）</th>
+        <th>Health</th>
+        <th>Response (ms)</th>
+        <th>HTTP Path</th>
+        <th>HTTP Status</th>
+        <th>HTTP Expected</th>
+        <th>HTTP Health</th>
+        <th>HTTP Time (ms)</th>
+        <th>HTTP Event</th>
+        <th>HTTP Consecutive</th>
+        <th>Anomaly / Event</th>
+      </tr>
+    </thead>
+    <tbody id="result-body"></tbody>
+  </table>
+</div>
+
+<p class="note">
+  ResponseはTCP接続試行時間です。HTTP/API応答時間ではありません。
+  Healthは設定したTCP監視条件に対する判定であり、サービス全体の正常性を保証しません。
+  HTTP EventはHTTP Healthとは独立した遅延・連続異常・復旧の判定です。
+</p>
+
+<script>
+function statusText(value) {
+  if (value === 1) return 'OPEN';
+  if (value === 0) return 'CLOSED';
+  return 'ERROR';
+}
+
+function expectedText(value) {
+  if (value === 1) return 'OPEN';
+  if (value === 0) return 'CLOSED';
+  if (value === 2) return 'OBSERVE_ONLY';
+  return '不明';
+}
+
+function healthInfo(value) {
+  const values = {
+    0: ['要確認', 'health-unknown'],
+    1: ['正常', 'health-ok'],
+    2: ['警戒', 'health-warning'],
+    3: ['異常', 'health-alert'],
+    4: ['観測のみ', 'health-observe']
+  };
+  return values[value] || values[0];
+}
+
+function makeCell(row, value, className = '') {
+  const cell = document.createElement('td');
+  cell.textContent = value == null ? '' : String(value);
+  if (className) cell.className = className;
+  row.appendChild(cell);
+}
+
+function isStale(timeString) {
+  if (!timeString) return true;
+  const timestamp = Date.parse(timeString.replace(' ', 'T'));
+  if (!Number.isFinite(timestamp)) return true;
+  const age = Date.now() - timestamp;
+  return age > 20000 || age < -60000;
+}
+
+async function fetchStatus() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+
+  try {
+    const response = await fetch('/api/status', {
+      cache: 'no-store',
+      signal: controller.signal
+    });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+
+    const data = await response.json();
+    if (!Array.isArray(data)) throw new Error('Invalid response');
+
+    const tbody = document.getElementById('result-body');
+    tbody.replaceChildren();
+
+    let staleCount = 0;
+
+    data.forEach(item => {
+      const stale = isStale(item.time_str);
+      const info = stale
+        ? ['更新停止の可能性', 'health-stale']
+        : healthInfo(item.health_status);
+
+      if (stale) staleCount++;
+
+      const tr = document.createElement('tr');
+      tr.className = info[1];
+
+      makeCell(tr, item.time_str);
+      makeCell(tr, item.ip);
+      makeCell(tr, item.port);
+      makeCell(tr, statusText(item.result), 'status-text');
+      makeCell(tr, expectedText(item.expected_state));
+      makeCell(tr, info[0], info[1]);
+      makeCell(tr, item.response_ms);
+      makeCell(tr, item.http_enabled ? item.http_path : '—');
+      const httpStatusText = !item.http_enabled ? '—' :
+        item.http_status > 0 ? 'HTTP ' + item.http_status :
+        '通信失敗 (' + (item.http_error_stage || 'unknown') + ')';
+      makeCell(tr, httpStatusText);
+      makeCell(tr, item.http_enabled ? 'HTTP ' + item.http_expected_status : '—');
+      const h = item.http_health_status;
+      const httpHealth = !item.http_enabled ? ['—', ''] :
+        h === 1 ? ['正常', 'health-ok'] :
+        h === 2 ? ['期待不一致', 'health-alert'] :
+        h === 3 ? ['通信失敗', 'health-unknown'] : ['未判定', 'health-unknown'];
+      makeCell(tr, httpHealth[0], httpHealth[1]);
+      makeCell(tr, item.http_enabled && item.http_response_ms >= 0
+        ? item.http_response_ms : '—');
+      const a = item.http_anomaly_type;
+      const httpEvent = !item.http_enabled ? ['—', ''] :
+        a === 0 ? ['正常', 'health-ok'] :
+        a === 1 ? ['ステータス不一致', 'health-alert'] :
+        a === 2 ? ['通信失敗', 'health-unknown'] :
+        a === 3 ? ['応答遅延', 'health-warning'] :
+        a === 4 ? ['連続異常', 'health-alert'] :
+        a === 5 ? ['復旧', 'health-ok'] : ['未判定', 'health-unknown'];
+      const httpEventCell = document.createElement('td');
+      httpEventCell.textContent = httpEvent[0];
+      httpEventCell.className = httpEvent[1];
+      httpEventCell.title = item.http_anomaly_message || '';
+      tr.appendChild(httpEventCell);
+      makeCell(tr, item.http_enabled ? (item.http_consecutive_abnormal ?? 0) : '—');
+      makeCell(tr, item.anomaly_message);
+
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById('updated-at').textContent =
+      '画面取得時刻: ' + new Date().toLocaleString('ja-JP');
+
+    document.getElementById('connection-state').textContent =
+      data.length === 0 ? '監視結果なし' :
+      staleCount > 0 ? '古い監視結果があります' :
+      '最新の監視結果を取得しました';
+  } catch (error) {
+    document.getElementById('connection-state').textContent =
+      '監視データを取得できません。監視ツールの稼働状況を確認してください。';
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function fetchAuthStatus() {
+  const stateNode = document.getElementById('auth-state');
+  const detailNode = document.getElementById('auth-detail');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch('/api/auth-status', { cache: 'no-store', signal: controller.signal });
+    if (!response.ok) throw new Error('Auth API error');
+    const auth = await response.json();
+    if (auth.state === 'alert') {
+      stateNode.textContent = '警告：認証失敗集中の疑い';
+      detailNode.textContent = '直近60秒に5回以上の失敗：IP別 ' + auth.source_active +
+        ' グループ、ユーザー名別 ' + auth.username_active + ' グループ';
+    } else if (auth.state === 'no_alert') {
+      stateNode.textContent = '現在の失敗集中アラート：検知なし';
+      detailNode.textContent = 'ログ取込時点のデータに基づく判定です。攻撃が存在しないことの証明ではありません。';
+    } else if (auth.state === 'stale') {
+      stateNode.textContent = '要確認：認証ログの取込更新が停止しています';
+      detailNode.textContent = '最終スナップショットが120秒以上前です。警告が0件でも正常とは判断できません。';
+    } else {
+      stateNode.textContent = '要確認：認証ログを解析できません';
+      detailNode.textContent = 'ログの欠落・形式異常・読取権限を確認してください。';
+    }
+  } catch (_) {
+    stateNode.textContent = '要確認：認証監視APIに接続できません';
+    detailNode.textContent = '監視ツールの稼働状況を確認してください。';
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+fetchStatus();
+setInterval(fetchStatus, 2000);
+fetchAuthStatus();
+setInterval(fetchAuthStatus, 4000);
+</script>
+</body>
+</html>

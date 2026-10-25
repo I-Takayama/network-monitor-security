@@ -1,0 +1,9 @@
+ip=127.0.0.1
+start_port=18000
+end_port=18000
+interval=2
+web_port=8082
+expected_state=OPEN
+http_port=18000
+http_path=/health
+http_expected_status=200

@@ -1,0 +1,35 @@
+# Build
+/monitor
+/src/*.o
+*.o
+
+# Local runtime state
+/data/*
+!/data/config.example.txt
+*.csv
+*.jsonl
+*.tsv
+*.log
+*.pid
+checkpoint.json
+poll-heartbeat.txt
+
+# Secrets
+.env
+.env.*
+!.env.example
+**/.ssh/
+**/id_ed25519*
+**/id_rsa*
+*.pem
+*.key
+*.p12
+
+# Local development artifacts
+*.bak
+*.bak-*
+*.pre-*.bak
+*~
+*.swp
+__pycache__/
+.pytest_cache/
